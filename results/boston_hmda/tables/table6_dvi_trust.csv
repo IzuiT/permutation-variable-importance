@@ -1,0 +1,5 @@
+,Direct-Opt,Direct-Approx,Breiman (B=1),Breiman (B=10)
+Ground-truth cor,0.998,0.998,0.998,0.998
+Max score diff,0.219,0.222,0.222,0.220
+Mean score diff,0.037,0.037,0.037,0.037
+Time (ms),12.38,9.50,30.57,133.27

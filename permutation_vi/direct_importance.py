@@ -22,16 +22,24 @@ class DirectVariableImportance:
 
     Parameters
     ----------
-    permutation_type : {'optimal', 'approximate'}, default='optimal'
+    permutation_type : {'optimal', 'approximate', 'breiman'}, default='optimal'
         Type of permutation to use:
-        - 'optimal': Rank-shift by ⌊n/2⌋ (O(n log n), most accurate)
-        - 'approximate': Index-shift by ⌊n/2⌋ (O(n), faster approximation)
+        - 'optimal': Rank-shift by n/2 (O(n log n), most accurate)
+        - 'approximate': Index-shift by n/2 (O(n), faster approximation)
+        - 'breiman': Random permutations averaged over n_repeats
+          (traditional Breiman-style, used as ground truth with large B)
 
     scoring_metric : {'mae', 'mse', 'rmse'}, default='mae'
         Metric to measure prediction change:
         - 'mae': Mean Absolute Error (recommended by paper)
         - 'mse': Mean Squared Error (traditional choice)
         - 'rmse': Root Mean Squared Error
+
+    n_repeats : int, default=1
+        Number of random permutations to average (only for 'breiman').
+
+    random_state : int or None, default=None
+        Random seed for reproducibility (only for 'breiman').
 
     Attributes
     ----------
@@ -65,12 +73,14 @@ class DirectVariableImportance:
 
     def __init__(
         self,
-        permutation_type: Literal['optimal', 'approximate'] = 'optimal',
-        scoring_metric: Literal['mae', 'mse', 'rmse'] = 'mae'
+        permutation_type: Literal['optimal', 'approximate', 'breiman'] = 'optimal',
+        scoring_metric: Literal['mae', 'mse', 'rmse'] = 'mae',
+        n_repeats: int = 1,
+        random_state: Optional[int] = None
     ):
-        if permutation_type not in ['optimal', 'approximate']:
+        if permutation_type not in ['optimal', 'approximate', 'breiman']:
             raise ValueError(
-                f"permutation_type must be 'optimal' or 'approximate', "
+                f"permutation_type must be 'optimal', 'approximate', or 'breiman', "
                 f"got {permutation_type}"
             )
         if scoring_metric not in ['mae', 'mse', 'rmse']:
@@ -81,6 +91,8 @@ class DirectVariableImportance:
 
         self.permutation_type = permutation_type
         self.scoring_metric = scoring_metric
+        self.n_repeats = n_repeats
+        self.random_state = random_state
 
         # To be set during fit()
         self.importances_ = None
@@ -177,7 +189,7 @@ class DirectVariableImportance:
         else:
             raise ValueError(f"Unknown scoring metric: {self.scoring_metric}")
 
-    def _permute_feature(self, x: np.ndarray) -> np.ndarray:
+    def _permute_feature(self, x: np.ndarray, rng: Optional[np.random.RandomState] = None) -> np.ndarray:
         """
         Apply the selected permutation strategy.
 
@@ -185,6 +197,8 @@ class DirectVariableImportance:
         ----------
         x : np.ndarray of shape (n_samples,)
             Feature values
+        rng : np.random.RandomState, optional
+            Random state for 'breiman' permutation type
 
         Returns
         -------
@@ -193,6 +207,8 @@ class DirectVariableImportance:
         """
         if self.permutation_type == 'optimal':
             return self._optimal_permutation(x)
+        elif self.permutation_type == 'breiman':
+            return rng.permutation(x)
         else:  # 'approximate'
             return self._approximate_permutation(x)
 
@@ -266,25 +282,28 @@ class DirectVariableImportance:
         # Get baseline predictions
         y_pred = get_predictions(X)
 
-        # Compute importance for each feature
+        # Determine number of repeats
+        n_repeats = self.n_repeats if self.permutation_type == 'breiman' else 1
+
+        # Compute importance for each feature, averaged over repeats
         scores = np.zeros(n_features)
 
-        for j in range(n_features):
-            # Create copy with feature j permuted
-            X_perm = X.copy()
-            X_perm[:, j] = self._permute_feature(X[:, j])
+        for b in range(n_repeats):
+            rng = np.random.RandomState(self.random_state + b) if self.random_state is not None else np.random.RandomState()
 
-            # Get perturbed predictions
-            y_pred_perm = get_predictions(X_perm)
+            for j in range(n_features):
+                X_perm = X.copy()
+                X_perm[:, j] = self._permute_feature(X[:, j], rng=rng)
 
-            # Compute score (handles both regression and classification)
-            scores[j] = self._compute_score(y_pred, y_pred_perm)
+                y_pred_perm = get_predictions(X_perm)
+                scores[j] += self._compute_score(y_pred, y_pred_perm)
+
+        scores /= n_repeats
 
         # Normalize to sum to 1
         if scores.sum() > 0:
             scores = scores / scores.sum()
         else:
-            # All scores are zero (model is constant)
             scores = np.ones(n_features) / n_features
 
         self.importances_ = scores
@@ -335,8 +354,11 @@ class DirectVariableImportance:
 
     def __repr__(self) -> str:
         """String representation."""
-        return (
-            f"DirectVariableImportance("
-            f"permutation_type='{self.permutation_type}', "
-            f"scoring_metric='{self.scoring_metric}')"
-        )
+        parts = [
+            f"permutation_type='{self.permutation_type}'",
+            f"scoring_metric='{self.scoring_metric}'"
+        ]
+        if self.permutation_type == 'breiman':
+            parts.append(f"n_repeats={self.n_repeats}")
+            parts.append(f"random_state={self.random_state}")
+        return f"DirectVariableImportance({', '.join(parts)})"

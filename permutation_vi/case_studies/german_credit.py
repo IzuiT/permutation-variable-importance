@@ -155,12 +155,7 @@ class GermanCreditExperiment:
         model = models[master_model]
         model.fit(self.X, self.y)
 
-        # Get ground truth from RF (averaged over folds)
-        print("\nComputing ground truth importance (RF, out-of-fold)...")
-        rf_model = models['RF']
-
-        # For classification, we need to use probabilities
-        # Create a wrapper that returns class 1 probabilities
+        # For classification, wrap model to return class 1 probabilities
         class ProbWrapper:
             def __init__(self, clf_model):
                 self.clf = clf_model
@@ -168,25 +163,17 @@ class GermanCreditExperiment:
             def predict(self, X):
                 return self.clf.predict_proba(X)[:, 1]
 
-        # Compute ground truth using DVI on RF probabilities
-        dvi_gt = DirectVariableImportance(
-            permutation_type='optimal',
-            scoring_metric=scoring
-        )
-
-        # Fit DVI using out-of-fold RF predictions
-        y_pred_rf = get_cv_fold_predictions(
-            rf_model, self.X, self.y,
-            n_folds=10,
-            random_state=self.random_state,
-            return_proba=True
-        )[:, 1]  # Get class 1 probabilities
-
-        # Use a simple lambda that returns the cached predictions
-        gt_scores = dvi_gt.fit(lambda X: y_pred_rf, self.X, self.y)
-
-        # For actual model testing, wrap to return probabilities
         model_wrapper = ProbWrapper(model)
+
+        # Ground truth: same master model with Breiman-style DVI (B=100)
+        print("\nComputing ground truth importance (Breiman B=100)...")
+        dvi_gt = DirectVariableImportance(
+            permutation_type='breiman',
+            scoring_metric=scoring,
+            n_repeats=100,
+            random_state=self.random_state
+        )
+        gt_scores = dvi_gt.fit(model_wrapper, self.X, self.y)
 
         # Method 1: Direct-Optimal
         print("\n[1/4] Running Direct-Opt...")
@@ -216,40 +203,33 @@ class GermanCreditExperiment:
         print(f"  Correlation: {metrics_approx['ground_truth_cor']:.3f}")
         print(f"  Time: {metrics_approx['time_ms']:.2f} ms")
 
-        # Method 3: Breiman (B=1)
+        # Method 3: Breiman (B=1) - DVI with 1 random permutation
         print("\n[3/4] Running Breiman (B=1)...")
-        from sklearn.inspection import permutation_importance
-        start = time.time()
-        perm_imp_1 = permutation_importance(
-            model, self.X, self.y,
+        dvi_b1 = DirectVariableImportance(
+            permutation_type='breiman',
+            scoring_metric=scoring,
             n_repeats=1,
-            random_state=self.random_state,
-            scoring='neg_brier_score'  # For classification
+            random_state=self.random_state
         )
+        start = time.time()
+        scores_b1 = dvi_b1.fit(model_wrapper, self.X, self.y)
         time_b1 = time.time() - start
-
-        scores_b1 = perm_imp_1.importances_mean
-        scores_b1 = np.maximum(scores_b1, 0)
-        scores_b1 = scores_b1 / scores_b1.sum() if scores_b1.sum() > 0 else scores_b1
 
         metrics_b1 = compute_vi_comparison_metrics(gt_scores, scores_b1, time_b1)
         print(f"  Correlation: {metrics_b1['ground_truth_cor']:.3f}")
         print(f"  Time: {metrics_b1['time_ms']:.2f} ms")
 
-        # Method 4: Breiman (B=10)
+        # Method 4: Breiman (B=10) - DVI with 10 random permutations
         print("\n[4/4] Running Breiman (B=10)...")
-        start = time.time()
-        perm_imp_10 = permutation_importance(
-            model, self.X, self.y,
+        dvi_b10 = DirectVariableImportance(
+            permutation_type='breiman',
+            scoring_metric=scoring,
             n_repeats=10,
-            random_state=self.random_state,
-            scoring='neg_brier_score'
+            random_state=self.random_state
         )
+        start = time.time()
+        scores_b10 = dvi_b10.fit(model_wrapper, self.X, self.y)
         time_b10 = time.time() - start
-
-        scores_b10 = perm_imp_10.importances_mean
-        scores_b10 = np.maximum(scores_b10, 0)
-        scores_b10 = scores_b10 / scores_b10.sum() if scores_b10.sum() > 0 else scores_b10
 
         metrics_b10 = compute_vi_comparison_metrics(gt_scores, scores_b10, time_b10)
         print(f"  Correlation: {metrics_b10['ground_truth_cor']:.3f}")
